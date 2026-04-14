@@ -9,12 +9,12 @@
  *   - REST API endpoints under /api/ (for client-side CRUD)
  */
 
-import express, { type Request, type Response } from 'express';
-import cors from 'cors';
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import express, { type Request, type Response } from "express";
+import cors from "cors";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,14 +40,22 @@ interface Contact {
 // ---------------------------------------------------------------------------
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_PATH = join(__dirname, '..', 'data', 'state.json');
+const DATA_PATH = join(__dirname, "..", "data", "state.json");
 
 const AVATAR_COLORS = [
-  '#4A90D9', '#E74C3C', '#2ECC71', '#F39C12', '#9B59B6',
-  '#1ABC9C', '#E67E22', '#3498DB', '#E91E63', '#00BCD4',
+  "#4A90D9",
+  "#E74C3C",
+  "#2ECC71",
+  "#F39C12",
+  "#9B59B6",
+  "#1ABC9C",
+  "#E67E22",
+  "#3498DB",
+  "#E91E63",
+  "#00BCD4",
 ];
 
-const stateData = JSON.parse(readFileSync(DATA_PATH, 'utf-8'));
+const stateData = JSON.parse(readFileSync(DATA_PATH, "utf-8"));
 let contacts: Contact[] = stateData.contacts;
 let groups: string[] = stateData.groups ?? [];
 
@@ -56,7 +64,7 @@ let groups: string[] = stateData.groups ?? [];
 // ---------------------------------------------------------------------------
 
 function findContact(id: string): Contact | undefined {
-  return contacts.find(c => c.id === id);
+  return contacts.find((c) => c.id === id);
 }
 
 function uniqueGroups(): string[] {
@@ -71,7 +79,7 @@ function ensureGroup(group: string): void {
 }
 
 function favoriteContacts(): Contact[] {
-  return contacts.filter(c => c.favorite);
+  return contacts.filter((c) => c.favorite);
 }
 
 function recentContacts(count: number): Contact[] {
@@ -98,8 +106,8 @@ function buildStats() {
 }
 
 function computeInitials(firstName: string, lastName: string): string {
-  const first = firstName.length > 0 ? firstName[0].toUpperCase() : '';
-  const last = lastName.length > 0 ? lastName[0].toUpperCase() : '';
+  const first = firstName.length > 0 ? firstName[0].toUpperCase() : "";
+  const last = lastName.length > 0 ? lastName[0].toUpperCase() : "";
   return first + last;
 }
 
@@ -109,8 +117,8 @@ function pickAvatarColor(): string {
 
 /** Returns true if the Accept header includes application/json. */
 function wantsJson(req: Request): boolean {
-  const accept = req.headers.accept || '';
-  return accept.indexOf('application/json') !== -1;
+  const accept = req.headers.accept || "";
+  return accept.indexOf("application/json") !== -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,7 +137,10 @@ app.use(express.json());
 // All SSR routes require Accept: application/json
 const ssr = express.Router();
 ssr.use((req: Request, res: Response, next) => {
-  if (!wantsJson(req)) { res.status(404).json({ error: 'Not found' }); return; }
+  if (!wantsJson(req)) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
   next();
 });
 
@@ -144,10 +155,10 @@ function sidebarState() {
 }
 
 // Dashboard — needs stats for the stat cards + recent contacts
-ssr.get('/', (_req: Request, res: Response) => {
+ssr.get("/", (_req: Request, res: Response) => {
   res.json({
     state: {
-      page: 'dashboard',
+      page: "dashboard",
       ...sidebarState(),
       recentContacts: recentContacts(5),
     },
@@ -155,62 +166,138 @@ ssr.get('/', (_req: Request, res: Response) => {
 });
 
 // All contacts
-ssr.get('/contacts', (_req: Request, res: Response) => {
-  res.json({ state: { page: 'contacts', ...sidebarState(), contacts } });
+ssr.get("/contacts", (req: Request, res: Response) => {
+  const rawQuery = typeof req.query.q === "string" ? req.query.q : "";
+  const q = rawQuery.trim().toLowerCase();
+
+  const filtered = q
+    ? contacts.filter(
+        (c) =>
+          c.firstName.toLowerCase().includes(q) ||
+          c.lastName.toLowerCase().includes(q) ||
+          c.email.toLowerCase().includes(q) ||
+          c.company.toLowerCase().includes(q) ||
+          c.phone.toLowerCase().includes(q),
+      )
+    : contacts;
+
+  res.json({
+    state: {
+      page: "contacts",
+      ...sidebarState(),
+      searchQuery: rawQuery,
+      contacts: filtered,
+    },
+  });
 });
 
 // Add contact form — must be before /contacts/:id to avoid matching "add" as an id
-ssr.get('/contacts/add', (_req: Request, res: Response) => {
+ssr.get("/contacts/add", (_req: Request, res: Response) => {
   const sidebar = sidebarState();
   res.json({
     state: {
-      page: 'contacts',
+      page: "contacts",
       ...sidebar,
-      selectedGroup: sidebar.groups[0] ?? '',
-      formTitle: 'Add Contact',
+      selectedGroup: sidebar.groups[0] ?? "",
+      formTitle: "Add Contact",
     },
   });
 });
 
 // Edit contact form — must be before /contacts/:id to avoid conflicts
-ssr.get('/contacts/:id/edit', (req: Request, res: Response) => {
+ssr.get("/contacts/:id/edit", (req: Request, res: Response) => {
   const contact = findContact(req.params.id);
-  if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
+  if (!contact) {
+    res.status(404).json({ error: "Contact not found" });
+    return;
+  }
   const { id, ...contactState } = contact;
   res.json({
     state: {
-      page: 'contacts',
+      page: "contacts",
       ...sidebarState(),
       ...contactState,
       editId: id,
       selectedGroup: contact.group,
-      formTitle: 'Edit Contact',
+      formTitle: "Edit Contact",
     },
   });
 });
 
 // Contact detail — spread contact fields at top level for SSR template bindings
-ssr.get('/contacts/:id', (req: Request, res: Response) => {
+ssr.get("/contacts/:id", (req: Request, res: Response) => {
   const contact = findContact(req.params.id);
-  if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
-  res.json({ state: { page: 'contacts', ...sidebarState(), ...contact, selectedContact: contact } });
+  if (!contact) {
+    res.status(404).json({ error: "Contact not found" });
+    return;
+  }
+  res.json({
+    state: {
+      page: "contacts",
+      ...sidebarState(),
+      ...contact,
+      selectedContact: contact,
+    },
+  });
 });
 
 // Favorites
-ssr.get('/favorites', (_req: Request, res: Response) => {
-  res.json({ state: { page: 'favorites', ...sidebarState(), contacts: favoriteContacts() } });
+ssr.get("/favorites", (req: Request, res: Response) => {
+  const rawQuery = typeof req.query.q === "string" ? req.query.q : "";
+  const q = rawQuery.trim().toLowerCase();
+
+  let result = favoriteContacts();
+
+  if (q) {
+    result = result.filter(
+      (c) =>
+        c.firstName.toLowerCase().includes(q) ||
+        c.lastName.toLowerCase().includes(q) ||
+        c.email.toLowerCase().includes(q) ||
+        c.company.toLowerCase().includes(q) ||
+        c.phone.toLowerCase().includes(q),
+    );
+  }
+
+  res.json({
+    state: {
+      page: "favorites",
+      ...sidebarState(),
+      searchQuery: rawQuery,
+      contacts: result,
+    },
+  });
 });
 
 // Group-filtered contacts
-ssr.get('/groups/:group', (req: Request, res: Response) => {
+ssr.get("/groups/:group", (req: Request, res: Response) => {
   const groupSlug = req.params.group;
-  const filtered = contacts.filter(c => c.group.toLowerCase() === groupSlug.toLowerCase());
+  const rawQuery = typeof req.query.q === "string" ? req.query.q : "";
+  const q = rawQuery.trim().toLowerCase();
+
+  let filtered = contacts.filter(
+    (c) => c.group.toLowerCase() === groupSlug.toLowerCase(),
+  );
+
+  if (q) {
+    filtered = filtered.filter(
+      (c) =>
+        c.firstName.toLowerCase().includes(q) ||
+        c.lastName.toLowerCase().includes(q) ||
+        c.email.toLowerCase().includes(q) ||
+        c.company.toLowerCase().includes(q) ||
+        c.phone.toLowerCase().includes(q),
+    );
+  }
+
   const displayName = filtered[0]?.group ?? groupSlug;
+
   res.json({
     state: {
-      page: 'group',
+      page: "group",
       activeGroup: displayName,
       ...sidebarState(),
+      searchQuery: rawQuery,
       contacts: filtered,
       groupName: displayName,
     },
@@ -224,55 +311,62 @@ ssr.get('/groups/:group', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 // List contacts with optional filtering
-app.get('/api/contacts', (_req: Request, res: Response) => {
+app.get("/api/contacts", (_req: Request, res: Response) => {
   let result = contacts;
 
-  const query = String(_req.query.q || '');
+  const query = String(_req.query.q || "");
   if (query) {
     const q = query.toLowerCase();
-    result = result.filter(c =>
-      c.firstName.toLowerCase().indexOf(q) !== -1 ||
-      c.lastName.toLowerCase().indexOf(q) !== -1 ||
-      c.email.toLowerCase().indexOf(q) !== -1 ||
-      c.company.toLowerCase().indexOf(q) !== -1
+    result = result.filter(
+      (c) =>
+        c.firstName.toLowerCase().indexOf(q) !== -1 ||
+        c.lastName.toLowerCase().indexOf(q) !== -1 ||
+        c.email.toLowerCase().indexOf(q) !== -1 ||
+        c.company.toLowerCase().indexOf(q) !== -1,
     );
   }
 
-  const group = String(_req.query.group || '');
+  const group = String(_req.query.group || "");
   if (group) {
-    result = result.filter(c => c.group === group);
+    result = result.filter((c) => c.group === group);
   }
 
-  if (_req.query.favorites === 'true') {
-    result = result.filter(c => c.favorite);
+  if (_req.query.favorites === "true") {
+    result = result.filter((c) => c.favorite);
   }
 
   res.json(result);
 });
 
 // Get single contact
-app.get('/api/contacts/:id', (req: Request, res: Response) => {
+app.get("/api/contacts/:id", (req: Request, res: Response) => {
   const contact = findContact(req.params.id);
-  if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
+  if (!contact) {
+    res.status(404).json({ error: "Contact not found" });
+    return;
+  }
   res.json(contact);
 });
 
 // Create contact
-app.post('/api/contacts', (req: Request, res: Response) => {
+app.post("/api/contacts", (req: Request, res: Response) => {
   const body = req.body || {};
   const newContact: Contact = {
     id: randomUUID(),
-    firstName: String(body.firstName || ''),
-    lastName: String(body.lastName || ''),
-    email: String(body.email || ''),
-    phone: String(body.phone || ''),
-    company: String(body.company || ''),
-    group: String(body.group || 'Other'),
+    firstName: String(body.firstName || ""),
+    lastName: String(body.lastName || ""),
+    email: String(body.email || ""),
+    phone: String(body.phone || ""),
+    company: String(body.company || ""),
+    group: String(body.group || "Other"),
     favorite: Boolean(body.favorite),
-    initials: computeInitials(String(body.firstName || ''), String(body.lastName || '')),
-    avatarColor: String(body.avatarColor || '') || pickAvatarColor(),
-    notes: String(body.notes || ''),
-    address: String(body.address || ''),
+    initials: computeInitials(
+      String(body.firstName || ""),
+      String(body.lastName || ""),
+    ),
+    avatarColor: String(body.avatarColor || "") || pickAvatarColor(),
+    notes: String(body.notes || ""),
+    address: String(body.address || ""),
   };
   contacts.push(newContact);
   ensureGroup(newContact.group);
@@ -280,15 +374,20 @@ app.post('/api/contacts', (req: Request, res: Response) => {
 });
 
 // Update contact
-app.put('/api/contacts/:id', (req: Request, res: Response) => {
-  const idx = contacts.findIndex(c => c.id === req.params.id);
-  if (idx === -1) { res.status(404).json({ error: 'Contact not found' }); return; }
+app.put("/api/contacts/:id", (req: Request, res: Response) => {
+  const idx = contacts.findIndex((c) => c.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: "Contact not found" });
+    return;
+  }
 
   const existing = contacts[idx];
   const body = req.body || {};
 
-  const firstName = body.firstName !== undefined ? String(body.firstName) : existing.firstName;
-  const lastName = body.lastName !== undefined ? String(body.lastName) : existing.lastName;
+  const firstName =
+    body.firstName !== undefined ? String(body.firstName) : existing.firstName;
+  const lastName =
+    body.lastName !== undefined ? String(body.lastName) : existing.lastName;
 
   const updated: Contact = {
     id: existing.id,
@@ -296,13 +395,19 @@ app.put('/api/contacts/:id', (req: Request, res: Response) => {
     lastName,
     email: body.email !== undefined ? String(body.email) : existing.email,
     phone: body.phone !== undefined ? String(body.phone) : existing.phone,
-    company: body.company !== undefined ? String(body.company) : existing.company,
+    company:
+      body.company !== undefined ? String(body.company) : existing.company,
     group: body.group !== undefined ? String(body.group) : existing.group,
-    favorite: body.favorite !== undefined ? Boolean(body.favorite) : existing.favorite,
+    favorite:
+      body.favorite !== undefined ? Boolean(body.favorite) : existing.favorite,
     initials: computeInitials(firstName, lastName),
-    avatarColor: body.avatarColor !== undefined ? String(body.avatarColor) : existing.avatarColor,
+    avatarColor:
+      body.avatarColor !== undefined
+        ? String(body.avatarColor)
+        : existing.avatarColor,
     notes: body.notes !== undefined ? String(body.notes) : existing.notes,
-    address: body.address !== undefined ? String(body.address) : existing.address,
+    address:
+      body.address !== undefined ? String(body.address) : existing.address,
   };
 
   contacts[idx] = updated;
@@ -311,15 +416,18 @@ app.put('/api/contacts/:id', (req: Request, res: Response) => {
 });
 
 // Delete contact
-app.delete('/api/contacts/:id', (req: Request, res: Response) => {
-  const idx = contacts.findIndex(c => c.id === req.params.id);
-  if (idx === -1) { res.status(404).json({ error: 'Contact not found' }); return; }
+app.delete("/api/contacts/:id", (req: Request, res: Response) => {
+  const idx = contacts.findIndex((c) => c.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: "Contact not found" });
+    return;
+  }
   contacts.splice(idx, 1);
   res.status(204).end();
 });
 
 // Stats
-app.get('/api/stats', (_req: Request, res: Response) => {
+app.get("/api/stats", (_req: Request, res: Response) => {
   res.json(buildStats());
 });
 

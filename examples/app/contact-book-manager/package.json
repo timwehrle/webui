@@ -11,15 +11,15 @@
     "start": "cargo xtask dev contact-book-manager",
     "test": "playwright test",
     "test:update-snapshots": "playwright test --update-snapshots"
-   },
-   "imports": {
+  },
+  "imports": {
     "#atoms/*": "./src/atoms/*",
     "#molecules/*": "./src/molecules/*",
     "#organisms/*": "./src/organisms/*",
     "#pages/*": "./src/pages/*",
     "#app/*": "./src/cb-app/*",
     "#api": "./src/api.ts"
-   },
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^5.1.0"
