@@ -148,6 +148,27 @@ pub struct WebUIFragmentAttribute {
 }
 ```
 
+##### Attribute Name Mapping
+
+Some HTML attributes use concatenated lowercase names that do not follow
+standard camelCase-to-kebab-case conversion rules. The canonical lookup
+table lives in `webui-protocol` (`webui_protocol::attrs`) and covers two
+categories:
+
+1. **Multi-word ARIA attributes** — e.g., `aria-describedby` ↔
+   `ariaDescribedBy`, `aria-activedescendant` ↔ `ariaActiveDescendant`,
+   per the [ARIAMixin](https://w3c.github.io/aria/#ARIAMixin) specification.
+2. **HTML global/element attributes** — e.g., `readonly` ↔ `readOnly`,
+   `tabindex` ↔ `tabIndex`, `contenteditable` ↔ `contentEditable`.
+
+The handler and parser both call into `webui_protocol::attrs` — there is
+no duplicated table. The framework (`toKebabCase` in `decorators.ts`)
+maintains a TypeScript copy of the same table for client-side use.
+
+Attributes that follow standard conversion (e.g., `aria-label` ↔ `ariaLabel`,
+`data-title` ↔ `dataTitle`) use the generic algorithm and do not require
+the lookup table.
+
 #### Plugin Fragment
 Plugin fragments carry opaque data from parser plugins to handler plugins. WebUI does
 not interpret this data — each parser/handler plugin pair defines its own binary contract.
@@ -167,6 +188,7 @@ pub struct WebUIFragmentRoute {
     pub fragment_id: String,                   // Fragment containing the route body
     pub exact: bool,                           // Require exact path match
     pub children: Vec<WebUIFragmentRoute>,     // Nested child routes
+    pub allowed_query: String,                 // Comma-separated allowlist of query params forwarded as attributes
 }
 ```
 
@@ -196,8 +218,13 @@ Child paths are relative to their parent (no leading `/`). The HTML nesting IS t
       <route path="lessons/:lessonId" component="lesson-page" exact />
     </route>
   </route>
+  <route path="compose" component="compose-page" query="action,to,subject" exact />
 </route>
 ```
+
+The optional `query` attribute declares which URL query parameters are forwarded as HTML attributes
+on the component (deny-by-default). Routes without `query` forward no query params. Route path
+params always take priority over query params to prevent URL-based attribute injection.
 
 **Route matching:** The handler uses an iterative path template matcher (no regex). Segments are
 compared left-to-right: `:param` binds a value, `*splat` captures remaining segments, `?` marks

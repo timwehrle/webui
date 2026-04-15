@@ -7,6 +7,7 @@ import './browser-shim.js';
 import { strict as assert } from 'node:assert';
 import { describe, test, beforeEach, afterEach } from 'node:test';
 import { WebUIRouter } from './router.js';
+import { parseQuery, filterQuery } from './router.js';
 
 // ── Test-only type access ────────────────────────────────────────
 // The router's `inventory` and `activeChain` are private at compile
@@ -160,6 +161,7 @@ describe('WebUIRouter', () => {
 
       (globalThis as any).fetch = async () => ({
         ok: true,
+        headers: { get: () => 'application/json' },
         json: async () => ({
           state: {},
           templateStyles: [
@@ -244,6 +246,7 @@ describe('WebUIRouter', () => {
 
       (globalThis as any).fetch = async () => ({
         ok: true,
+        headers: { get: () => 'application/json' },
         json: async () => ({
           state: {},
           templateStyles: [],
@@ -301,7 +304,7 @@ describe('WebUIRouter', () => {
       let capturedSignal: AbortSignal | undefined;
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
         capturedSignal = opts?.signal as AbortSignal | undefined;
-        return { ok: true, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
       };
 
       try {
@@ -329,6 +332,7 @@ describe('WebUIRouter', () => {
       (globalThis as any).fetch = async (_url: string, _opts?: RequestInit) => {
         return {
           ok: true,
+          headers: { get: () => 'application/json' },
           json: async () => ({
             state: {},
             templates: [
@@ -366,7 +370,7 @@ describe('WebUIRouter', () => {
       const origFetch = (globalThis as any).fetch;
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
         assert.equal(opts?.signal, undefined, 'signal should be undefined');
-        return { ok: true, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
       };
 
       try {
@@ -478,6 +482,35 @@ describe('WebUIRouter', () => {
       assert.ok(
         !source.includes('transition.finished'),
         'should NOT await transition.finished on the view transition — it blocks rapid navigation',
+      );
+    });
+
+    test('startViewTransition is skipped for query-only navigations', () => {
+      // Regression (issue #235): query-only navigations (e.g. /contacts →
+      // /contacts?q=foo) do not remount any components. Wrapping them in
+      // startViewTransition captures a screenshot and temporarily suppresses
+      // the live DOM, which blurs the active element (search input focus lost
+      // mid-typing). The router must guard the startViewTransition call with
+      // an `isQueryOnlyChange` check so focus is preserved.
+      const router = new WebUIRouter();
+      const source = (router as any).handleNavigation.toString() as string;
+
+      // The view-transition block must be gated on !isQueryOnlyChange
+      const transitionIdx = source.indexOf('startViewTransition');
+      assert.ok(transitionIdx > -1, 'startViewTransition should be referenced');
+
+      // The `if` condition that invokes startViewTransition must also
+      // check isQueryOnlyChange (either before or after the feature check).
+      // We grab the surrounding context to verify the guard is present.
+      const conditionRegion = source.slice(
+        Math.max(0, transitionIdx - 120),
+        transitionIdx + 80,
+      );
+      assert.ok(
+        conditionRegion.includes('isQueryOnlyChange'),
+        'startViewTransition must be guarded by isQueryOnlyChange — ' +
+        'query-only navigations must skip view transitions to preserve focus ' +
+        `(condition region: "${conditionRegion}")`,
       );
     });
 
@@ -603,5 +636,87 @@ describe('WebUIRouter', () => {
         (globalThis as any).document.head = origHead;
       }
     });
+  });
+});
+
+// ── parseQuery unit tests ────────────────────────────────────────
+
+describe('parseQuery', () => {
+  test('returns empty object for paths without query string', () => {
+    assert.deepEqual(parseQuery('/compose'), {});
+    assert.deepEqual(parseQuery('/'), {});
+    assert.deepEqual(parseQuery('/items/42'), {});
+  });
+
+  test('parses single query parameter', () => {
+    assert.deepEqual(parseQuery('/compose?action=reply'), { action: 'reply' });
+  });
+
+  test('parses multiple query parameters', () => {
+    assert.deepEqual(
+      parseQuery('/compose?action=reply&to=test@example.com&subject=Re: Hello'),
+      { action: 'reply', to: 'test@example.com', subject: 'Re: Hello' },
+    );
+  });
+
+  test('decodes percent-encoded values', () => {
+    assert.deepEqual(
+      parseQuery('/compose?subject=Re%3A%20%5Bwebui%5D%20Fix%20bug'),
+      { subject: 'Re: [webui] Fix bug' },
+    );
+  });
+
+  test('handles empty values', () => {
+    assert.deepEqual(parseQuery('/search?q='), { q: '' });
+  });
+
+  test('last value wins for duplicate keys', () => {
+    const result = parseQuery('/search?sort=date&sort=name');
+    assert.equal(result.sort, 'name');
+  });
+
+  test('handles query with no path prefix', () => {
+    assert.deepEqual(parseQuery('/?q=test'), { q: 'test' });
+  });
+});
+
+// ── filterQuery unit tests ───────────────────────────────────────
+
+describe('filterQuery', () => {
+  test('returns empty object when allowlist is null (deny-by-default)', () => {
+    assert.deepEqual(filterQuery({ action: 'reply', evil: 'inject' }, null), {});
+  });
+
+  test('returns empty object when allowlist is empty set', () => {
+    assert.deepEqual(filterQuery({ action: 'reply' }, new Set()), {});
+  });
+
+  test('passes only allowed keys', () => {
+    const allowed = new Set(['action', 'to']);
+    const query = { action: 'reply', to: 'user@test.com', evil: 'inject', style: 'display:none' };
+    assert.deepEqual(filterQuery(query, allowed), { action: 'reply', to: 'user@test.com' });
+  });
+
+  test('excludes keys that collide with route params', () => {
+    const allowed = new Set(['itemId', 'action']);
+    const query = { itemId: 'evil', action: 'reply' };
+    const routeParams = { itemId: '42' };
+    assert.deepEqual(filterQuery(query, allowed, routeParams), { action: 'reply' });
+  });
+
+  test('excludes keys whose kebab form collides with route param kebab form', () => {
+    const allowed = new Set(['item-id', 'action']);
+    const query = { 'item-id': 'evil', action: 'reply' };
+    const routeParams = { itemId: '42' };
+    assert.deepEqual(filterQuery(query, allowed, routeParams), { action: 'reply' });
+  });
+
+  test('returns empty object when query is empty', () => {
+    assert.deepEqual(filterQuery({}, new Set(['action'])), {});
+  });
+
+  test('handles allowed keys not present in query', () => {
+    const allowed = new Set(['action', 'to', 'subject']);
+    assert.deepEqual(filterQuery({ action: 'reply' }, allowed), { action: 'reply' });
   });
 });

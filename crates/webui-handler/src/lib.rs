@@ -136,47 +136,14 @@ struct WebUIProcessContext<'a> {
     nonce: Option<String>,
 }
 
-/// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
-fn convert_hyphen_to_camel_case(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    let mut capitalize_next = false;
-    for ch in name.chars() {
-        if ch == '-' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.extend(ch.to_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
-/// Convert camelCase to kebab-case (e.g., "totalContacts" → "total-contacts").
-fn camel_to_kebab(name: &str) -> String {
-    let mut result = String::with_capacity(name.len() + 4);
-    for ch in name.chars() {
-        if ch.is_uppercase() && !result.is_empty() {
-            result.push('-');
-            for lc in ch.to_lowercase() {
-                result.push(lc);
-            }
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
+///
+/// Uses `webui_protocol::attrs::attribute_to_camel` which handles irregular
+/// attributes (multi-word ARIA and global HTML attributes like `readonly`,
+/// `tabindex`) via the shared lookup table.
 fn component_attr_name(name: &str) -> String {
     let stripped = name.strip_prefix(':').unwrap_or(name);
-    if stripped.contains('-') {
-        convert_hyphen_to_camel_case(stripped)
-    } else {
-        stripped.to_string()
-    }
+    webui_protocol::attrs::attribute_to_camel(stripped)
 }
 
 impl WebUIHandler {
@@ -417,6 +384,11 @@ impl WebUIHandler {
                 if matched_child.exact {
                     context.writer.write(" exact")?;
                 }
+                if !matched_child.allowed_query.is_empty() {
+                    context.writer.write(" query=\"")?;
+                    context.writer.write(&matched_child.allowed_query)?;
+                    context.writer.write("\"")?;
+                }
                 context.writer.write(" active>")?;
 
                 context.writer.write("<")?;
@@ -455,9 +427,18 @@ impl WebUIHandler {
                 }
                 context.writer.write(" component=\"")?;
                 context.writer.write(&child.fragment_id)?;
+                context.writer.write("\"")?;
+                if child.exact {
+                    context.writer.write(" exact")?;
+                }
+                if !child.allowed_query.is_empty() {
+                    context.writer.write(" query=\"")?;
+                    context.writer.write(&child.allowed_query)?;
+                    context.writer.write("\"")?;
+                }
                 context
                     .writer
-                    .write("\" style=\"display:none\"></webui-route>")?;
+                    .write(" style=\"display:none\"></webui-route>")?;
             }
         }
 
@@ -522,6 +503,11 @@ impl WebUIHandler {
         }
         if route_frag.exact {
             context.writer.write(" exact")?;
+        }
+        if !route_frag.allowed_query.is_empty() {
+            context.writer.write(" query=\"")?;
+            context.writer.write(&route_frag.allowed_query)?;
+            context.writer.write("\"")?;
         }
 
         if is_matched {
@@ -1006,7 +992,7 @@ impl WebUIHandler {
                     }
                     Some(other) => {
                         let s = other.to_string();
-                        write_attr(context.writer, &attr.name, &s)?;
+                        write_attr(context.writer, &attr.name, &html_escape::encode_safe(&s))?;
                     }
                 }
 
@@ -1632,6 +1618,82 @@ mod tests {
         assert_eq!(
             writer.get_content(),
             "<div name=\"test\" handle=\"0\"></div>"
+        );
+    }
+
+    // ── Dynamic attribute escaping for non-string JSON types ─────────
+
+    #[test]
+    fn test_attribute_array_value_is_escaped() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<a"),
+                    WebUIFragment::attribute("href", "value"),
+                    WebUIFragment::raw(">demo</a>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"value": ["\" autofocus onfocus=alert(1) x=\""]});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let content = writer.get_content();
+        // All inner double quotes must be entity-escaped so that the
+        // browser never sees a second attribute boundary.
+        assert!(
+            content.contains("&quot;"),
+            "Double quotes inside attribute value must be escaped: {content}"
+        );
+        // The href attribute value must be a single contiguous quoted
+        // string — no extra attributes should appear.
+        assert_eq!(
+            content.matches("=\"").count(),
+            1,
+            "Only one attribute assignment expected: {content}"
+        );
+    }
+
+    #[test]
+    fn test_attribute_object_value_is_escaped() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<div"),
+                    WebUIFragment::attribute("data-cfg", "cfg"),
+                    WebUIFragment::raw("></div>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"cfg": {"key": "\" onfocus=alert(1) x=\""}});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let content = writer.get_content();
+        assert!(
+            content.contains("&quot;"),
+            "Double quotes inside attribute value must be escaped: {content}"
+        );
+        assert_eq!(
+            content.matches("=\"").count(),
+            1,
+            "Only one attribute assignment expected: {content}"
         );
     }
 
@@ -5287,8 +5349,11 @@ mod tests {
                             fragment_id: "topic-comp".into(),
                             exact: true,
                             children: vec![],
+                            ..Default::default()
                         }],
+                        ..Default::default()
                     }],
+                    ..Default::default()
                 })],
             },
         );
@@ -5673,7 +5738,7 @@ mod tests {
         let html = writer.get_content();
 
         assert!(
-            html.contains(r#"component="topic-comp" style="display:none">"#),
+            html.contains(r#"component="topic-comp" exact style="display:none">"#),
             "topic should be hidden: {html}"
         );
     }
@@ -6277,6 +6342,180 @@ mod tests {
         assert!(
             html.contains("w['cart-panel']"),
             "rendered cart-panel template should be emitted: {html}"
+        );
+    }
+
+    #[test]
+    fn test_component_attr_name_aria() {
+        // component_attr_name correctly maps ARIA attributes via the shared table
+        assert_eq!(component_attr_name("aria-describedby"), "ariaDescribedBy");
+        assert_eq!(component_attr_name("aria-labelledby"), "ariaLabelledBy");
+        assert_eq!(
+            component_attr_name("aria-activedescendant"),
+            "ariaActiveDescendant"
+        );
+        assert_eq!(component_attr_name("aria-label"), "ariaLabel");
+        assert_eq!(component_attr_name("aria-hidden"), "ariaHidden");
+    }
+
+    #[test]
+    fn test_component_attr_name_html_global() {
+        assert_eq!(component_attr_name("readonly"), "readOnly");
+        assert_eq!(component_attr_name("tabindex"), "tabIndex");
+        assert_eq!(component_attr_name("accesskey"), "accessKey");
+        assert_eq!(component_attr_name("contenteditable"), "contentEditable");
+        assert_eq!(component_attr_name("crossorigin"), "crossOrigin");
+        assert_eq!(component_attr_name("inputmode"), "inputMode");
+        assert_eq!(component_attr_name("maxlength"), "maxLength");
+        assert_eq!(component_attr_name("minlength"), "minLength");
+        assert_eq!(component_attr_name("novalidate"), "noValidate");
+        assert_eq!(component_attr_name("formaction"), "formAction");
+        assert_eq!(component_attr_name("ismap"), "isMap");
+        assert_eq!(component_attr_name("usemap"), "useMap");
+    }
+
+    #[test]
+    fn test_component_attr_name_strips_colon() {
+        assert_eq!(component_attr_name(":readonly"), "readOnly");
+        assert_eq!(component_attr_name(":aria-describedby"), "ariaDescribedBy");
+        assert_eq!(component_attr_name(":data-title"), "dataTitle");
+    }
+
+    #[test]
+    fn test_component_attr_name_regular() {
+        assert_eq!(component_attr_name("data-title"), "dataTitle");
+        assert_eq!(component_attr_name("key-hyphen"), "keyHyphen");
+        assert_eq!(component_attr_name("simple"), "simple");
+    }
+
+    // ── allowed_query SSR emission tests ─────────────────────────────
+
+    fn make_query_route_protocol() -> WebUIProtocol {
+        use webui_protocol::WebUiFragmentRoute;
+
+        let mut fragments = HashMap::new();
+
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    exact: false,
+                    children: vec![
+                        WebUiFragmentRoute {
+                            path: "compose".into(),
+                            fragment_id: "compose-page".into(),
+                            exact: true,
+                            allowed_query: "action,to,subject".into(),
+                            ..Default::default()
+                        },
+                        WebUiFragmentRoute {
+                            path: "settings".into(),
+                            fragment_id: "settings-page".into(),
+                            exact: true,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                })],
+            },
+        );
+
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "compose-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
+            },
+        );
+        fragments.insert(
+            "settings-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Settings</p>")],
+            },
+        );
+
+        WebUIProtocol::new(fragments)
+    }
+
+    #[test]
+    fn test_matched_route_emits_query_attr() {
+        let protocol = make_query_route_protocol();
+        let state = test_json!({});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/compose"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+        assert!(
+            html.contains(r#"query="action,to,subject""#),
+            "matched route with allowed_query should emit query attr: {html}"
+        );
+    }
+
+    #[test]
+    fn test_nonmatched_route_preserves_query_attr() {
+        let protocol = make_query_route_protocol();
+        let state = test_json!({});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/settings"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+        // Compose is the non-matched sibling — it should still have query attr
+        assert!(
+            html.contains(r#"query="action,to,subject""#),
+            "hidden route should preserve query attr: {html}"
+        );
+    }
+
+    #[test]
+    fn test_route_without_query_has_no_query_attr() {
+        let protocol = make_query_route_protocol();
+        let state = test_json!({});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/settings"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+        // Find the settings route element and verify it has no query attr
+        let settings_idx = html
+            .find(r#"component="settings-page""#)
+            .expect("settings route should exist");
+        let settings_tag = &html[settings_idx.saturating_sub(60)..settings_idx + 40];
+        assert!(
+            !settings_tag.contains("query="),
+            "route without allowed_query should not emit query attr: {settings_tag}"
         );
     }
 }
